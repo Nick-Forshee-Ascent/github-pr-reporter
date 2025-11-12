@@ -142,15 +142,43 @@ A summary file `00_SUMMARY.txt` is also generated with overall statistics.
 
 ## PDF Generation
 
-To enable PDF generation, install pandoc:
+PDF generation requires both `pandoc` and a PDF engine. The script will automatically detect available tools.
+
+### Option 1: Pandoc + LaTeX (Recommended)
 
 ```bash
 # macOS
 brew install pandoc
+brew install basictex  # or mactex for full LaTeX distribution
+
+# After installing basictex, you may need to add it to PATH:
+# export PATH="/Library/TeX/texbin:$PATH"
+
+# Linux (Ubuntu/Debian)
+sudo apt-get install pandoc texlive-latex-base texlive-fonts-recommended
+```
+
+### Option 2: Pandoc + WeasyPrint
+
+```bash
+# macOS
+brew install pandoc weasyprint
 
 # Linux
-sudo apt-get install pandoc
+sudo apt-get install pandoc weasyprint
 ```
+
+### Option 3: Pandoc + wkhtmltopdf
+
+```bash
+# macOS
+brew install pandoc wkhtmltopdf
+
+# Linux
+sudo apt-get install pandoc wkhtmltopdf
+```
+
+**Note:** If pandoc is installed but no PDF engine is found, the script will show a helpful message and only generate CSV reports. The script will automatically detect which tools are available and use the best option.
 
 ## Report Contents
 

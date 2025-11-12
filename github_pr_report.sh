@@ -177,10 +177,30 @@ mkdir -p "$OUTPUT_DIR"
 HAS_PANDOC=$(command -v pandoc 2>/dev/null)
 HAS_WKHTML=$(command -v wkhtmltopdf 2>/dev/null)
 GENERATE_PDF=false
+PDF_TOOL=""
+PDF_ENGINE=""
 
 if [ -n "$HAS_PANDOC" ]; then
-    GENERATE_PDF=true
-    PDF_TOOL="pandoc"
+    # Check for available PDF engines
+    if command -v pdflatex &>/dev/null; then
+        GENERATE_PDF=true
+        PDF_TOOL="pandoc"
+        PDF_ENGINE="pdflatex"
+    elif command -v xelatex &>/dev/null; then
+        GENERATE_PDF=true
+        PDF_TOOL="pandoc"
+        PDF_ENGINE="xelatex"
+    elif command -v lualatex &>/dev/null; then
+        GENERATE_PDF=true
+        PDF_TOOL="pandoc"
+        PDF_ENGINE="lualatex"
+    elif command -v weasyprint &>/dev/null; then
+        GENERATE_PDF=true
+        PDF_TOOL="weasyprint"
+    elif [ -n "$HAS_WKHTML" ]; then
+        GENERATE_PDF=true
+        PDF_TOOL="wkhtmltopdf"
+    fi
 elif [ -n "$HAS_WKHTML" ]; then
     GENERATE_PDF=true
     PDF_TOOL="wkhtmltopdf"
@@ -198,9 +218,20 @@ fi
 echo "Output Directory: $OUTPUT_DIR"
 echo "Timestamp: $TIMESTAMP"
 if [ "$GENERATE_PDF" = true ]; then
-    echo "PDF Generation: Enabled ($PDF_TOOL)"
+    if [ "$PDF_TOOL" = "pandoc" ]; then
+        echo "PDF Generation: Enabled (pandoc with $PDF_ENGINE)"
+    else
+        echo "PDF Generation: Enabled ($PDF_TOOL)"
+    fi
 else
-    echo "PDF Generation: Disabled (CSV only - install pandoc for PDF support)"
+    echo "PDF Generation: Disabled"
+    if [ -n "$HAS_PANDOC" ]; then
+        echo "  Note: pandoc is installed but no PDF engine found."
+        echo "  Install a LaTeX distribution (e.g., 'brew install basictex' on macOS)"
+        echo "  or install weasyprint/wkhtmltopdf for PDF support."
+    else
+        echo "  Install pandoc + LaTeX engine, weasyprint, or wkhtmltopdf for PDF support."
+    fi
 fi
 echo "=========================================="
 echo ""
@@ -414,19 +445,68 @@ generate_report() {
         } > "$temp_md"
 
         # Convert to PDF
-        if [ "$PDF_TOOL" = "pandoc" ]; then
-            pandoc "$temp_md" -o "$final_report_pdf" --pdf-engine=pdflatex -V geometry:margin=1in 2>/dev/null || \
-            pandoc "$temp_md" -o "$final_report_pdf" -V geometry:margin=1in 2>/dev/null || \
-            echo "  ⚠ PDF generation failed, CSV available"
+        PDF_SUCCESS=false
+        PDF_ERROR=""
+
+        if [ "$PDF_TOOL" = "pandoc" ] && [ -n "$PDF_ENGINE" ]; then
+            # Try with specified engine
+            PDF_ERROR=$(pandoc "$temp_md" -o "$final_report_pdf" --pdf-engine="$PDF_ENGINE" -V geometry:margin=1in 2>&1)
+            if [ $? -eq 0 ] && [ -f "$final_report_pdf" ]; then
+                PDF_SUCCESS=true
+            else
+                # Try without specifying engine (pandoc will try to find one)
+                PDF_ERROR=$(pandoc "$temp_md" -o "$final_report_pdf" -V geometry:margin=1in 2>&1)
+                if [ $? -eq 0 ] && [ -f "$final_report_pdf" ]; then
+                    PDF_SUCCESS=true
+                else
+                    echo "  ⚠ PDF generation failed (pandoc requires a LaTeX engine like pdflatex)"
+                    if [ -n "$PDF_ERROR" ]; then
+                        echo "     Error: $(echo "$PDF_ERROR" | head -1)"
+                    fi
+                    echo "     CSV report is available: $final_report_csv"
+                fi
+            fi
         elif [ "$PDF_TOOL" = "wkhtmltopdf" ]; then
-            pandoc "$temp_md" -o /tmp/temp.html 2>/dev/null && \
-            wkhtmltopdf /tmp/temp.html "$final_report_pdf" 2>/dev/null || \
-            echo "  ⚠ PDF generation failed, CSV available"
+            # Convert markdown to HTML first, then to PDF
+            HTML_ERROR=$(pandoc "$temp_md" -o /tmp/temp.html 2>&1)
+            if [ $? -eq 0 ]; then
+                PDF_ERROR=$(wkhtmltopdf /tmp/temp.html "$final_report_pdf" 2>&1)
+                if [ $? -eq 0 ] && [ -f "$final_report_pdf" ]; then
+                    PDF_SUCCESS=true
+                else
+                    echo "  ⚠ PDF generation failed with wkhtmltopdf"
+                    if [ -n "$PDF_ERROR" ]; then
+                        echo "     Error: $(echo "$PDF_ERROR" | head -1)"
+                    fi
+                    echo "     CSV report is available: $final_report_csv"
+                fi
+            else
+                echo "  ⚠ Failed to convert markdown to HTML"
+                echo "     CSV report is available: $final_report_csv"
+            fi
+        elif [ "$PDF_TOOL" = "weasyprint" ]; then
+            # Convert markdown to HTML first, then to PDF
+            HTML_ERROR=$(pandoc "$temp_md" -o /tmp/temp.html 2>&1)
+            if [ $? -eq 0 ]; then
+                PDF_ERROR=$(weasyprint /tmp/temp.html "$final_report_pdf" 2>&1)
+                if [ $? -eq 0 ] && [ -f "$final_report_pdf" ]; then
+                    PDF_SUCCESS=true
+                else
+                    echo "  ⚠ PDF generation failed with weasyprint"
+                    if [ -n "$PDF_ERROR" ]; then
+                        echo "     Error: $(echo "$PDF_ERROR" | head -1)"
+                    fi
+                    echo "     CSV report is available: $final_report_csv"
+                fi
+            else
+                echo "  ⚠ Failed to convert markdown to HTML"
+                echo "     CSV report is available: $final_report_csv"
+            fi
         fi
 
         rm -f "$temp_md" /tmp/temp.html
 
-        if [ -f "$final_report_pdf" ]; then
+        if [ "$PDF_SUCCESS" = true ] && [ -f "$final_report_pdf" ]; then
             echo "  ✓ Generated PDF: $final_report_pdf"
         fi
     fi
