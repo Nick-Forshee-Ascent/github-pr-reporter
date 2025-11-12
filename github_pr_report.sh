@@ -409,7 +409,20 @@ generate_report() {
         local final_report_pdf="$OUTPUT_DIR/${repo_name}_PR_Report.pdf"
         local temp_md=$(mktemp)
 
-        # Convert CSV report to Markdown format
+        # Create a header LaTeX file for better formatting
+        local header_file=$(mktemp)
+        {
+            echo "\\usepackage{longtable}"
+            echo "\\usepackage{url}"
+            echo "\\usepackage{booktabs}"
+            echo "\\usepackage{array}"
+            echo "\\usepackage{geometry}"
+            echo "\\geometry{landscape,margin=0.75in}"
+            echo "\\usepackage{fancyvrb}"
+            echo "\\DefineVerbatimEnvironment{verbatim}{Verbatim}{fontsize=\\scriptsize,breaklines=true,breakanywhere=true}"
+        } > "$header_file"
+
+        # Convert CSV report to Markdown format with better formatting
         {
             echo "# GitHub Pull Request Report - Merged PRs Evidence"
             echo ""
@@ -422,7 +435,8 @@ generate_report() {
             echo "## Command Executed"
             echo ""
             echo "\`\`\`"
-            echo "$command_used"
+            # Break long command into multiple lines for better PDF rendering
+            echo "$command_used" | fold -w 70 -s
             echo "\`\`\`"
             echo ""
             echo "## Execution Details"
@@ -432,16 +446,41 @@ generate_report() {
             echo "- **Pages Fetched:** $pages_fetched"
             echo "- **Pagination Required:** $([ "$pages_fetched" -gt 1 ] && echo "Yes" || echo "No")"
             echo ""
+            echo "\\newpage"
+            echo ""
             echo "## Pull Request Summary"
             echo ""
-            echo "| Number | Title | Branch | Merged At | Author | URL | Reviewers Requested | Approval Status |"
-            echo "|--------|-------|--------|-----------|--------|-----|---------------------|----------------|"
+            # Use LaTeX longtable for better multi-page support (landscape allows wider columns)
+            echo "\\begin{longtable}{|p{0.6cm}|p{6cm}|p{2.5cm}|p{2cm}|p{2cm}|p{1.2cm}|p{1.2cm}|p{3cm}|}"
+            echo "\\hline"
+            echo "\\textbf{\\#} & \\textbf{Title} & \\textbf{Branch} & \\textbf{Merged} & \\textbf{Author} & \\textbf{Rev} & \\textbf{App} & \\textbf{URL} \\\\"
+            echo "\\hline"
+            echo "\\endfirsthead"
+            echo "\\hline"
+            echo "\\textbf{\\#} & \\textbf{Title} & \\textbf{Branch} & \\textbf{Merged} & \\textbf{Author} & \\textbf{Rev} & \\textbf{App} & \\textbf{URL} \\\\"
+            echo "\\hline"
+            echo "\\endhead"
+            echo "\\hline"
+            echo "\\endfoot"
             tail -n +2 "$report_file" | while IFS=$'\t' read -r num title branch merged author url reviewers approvals; do
-                # Escape pipe characters in fields for markdown table
-                title=$(echo "$title" | sed 's/|/\\|/g')
-                branch=$(echo "$branch" | sed 's/|/\\|/g')
-                echo "| $num | $title | $branch | $merged | $author | [$url]($url) | $reviewers | $approvals |"
+                # Escape LaTeX special characters - careful with order
+                # Replace backslash first, then other specials
+                title=$(echo "$title" | sed 's/\\/\\textbackslash{}/g' | sed 's/&/\\&/g' | sed 's/%/\\%/g' | sed 's/\$/\\\$/g' | sed 's/#/\\#/g' | sed 's/\^/\\^{}/g' | sed 's/{/\\{/g' | sed 's/}/\\}/g' | sed 's/_/\\_/g')
+                branch=$(echo "$branch" | sed 's/\\/\\textbackslash{}/g' | sed 's/&/\\&/g' | sed 's/%/\\%/g' | sed 's/\$/\\\$/g' | sed 's/#/\\#/g' | sed 's/\^/\\^{}/g' | sed 's/{/\\{/g' | sed 's/}/\\}/g' | sed 's/_/\\_/g')
+                author=$(echo "$author" | sed 's/\\/\\textbackslash{}/g' | sed 's/&/\\&/g' | sed 's/%/\\%/g' | sed 's/\$/\\\$/g' | sed 's/#/\\#/g' | sed 's/\^/\\^{}/g' | sed 's/{/\\{/g' | sed 's/}/\\}/g' | sed 's/_/\\_/g')
+                # Truncate long titles for better table formatting (landscape allows more space)
+                title_short=$(echo "$title" | cut -c1-60)
+                if [ ${#title} -gt 60 ]; then
+                    title_short="${title_short}..."
+                fi
+                # Format merged date to be shorter (just date, no time)
+                merged_date=$(echo "$merged" | cut -d'T' -f1)
+                # URL - escape special chars but keep it simple
+                url_safe=$(echo "$url" | sed 's/#/\\#/g' | sed 's/%/\\%/g')
+                echo "$num & $title_short & $branch & $merged_date & $author & $reviewers & $approvals & \\url{$url_safe} \\\\"
+                echo "\\hline"
             done
+            echo "\\end{longtable}"
         } > "$temp_md"
 
         # Convert to PDF
@@ -449,23 +488,92 @@ generate_report() {
         PDF_ERROR=""
 
         if [ "$PDF_TOOL" = "pandoc" ] && [ -n "$PDF_ENGINE" ]; then
-            # Try with specified engine
-            PDF_ERROR=$(pandoc "$temp_md" -o "$final_report_pdf" --pdf-engine="$PDF_ENGINE" -V geometry:margin=1in 2>&1)
-            if [ $? -eq 0 ] && [ -f "$final_report_pdf" ]; then
+            # Try with specified engine and LaTeX header file for better table formatting
+            PDF_ERROR=$(pandoc "$temp_md" -o "$final_report_pdf" --pdf-engine="$PDF_ENGINE" \
+                -H "$header_file" \
+                -V geometry:landscape,margin=0.75in \
+                -V fontsize=9pt \
+                --standalone \
+                -f markdown+raw_tex \
+                2>&1)
+            if [ $? -eq 0 ] && [ -f "$final_report_pdf" ] && [ -s "$final_report_pdf" ]; then
                 PDF_SUCCESS=true
             else
-                # Try without specifying engine (pandoc will try to find one)
-                PDF_ERROR=$(pandoc "$temp_md" -o "$final_report_pdf" -V geometry:margin=1in 2>&1)
-                if [ $? -eq 0 ] && [ -f "$final_report_pdf" ]; then
+                # Try with simpler header (just essential packages)
+                {
+                    echo "\\usepackage{longtable}"
+                    echo "\\usepackage{url}"
+                    echo "\\usepackage{geometry}"
+                    echo "\\geometry{landscape,margin=0.75in}"
+                } > "$header_file"
+
+                PDF_ERROR=$(pandoc "$temp_md" -o "$final_report_pdf" --pdf-engine="$PDF_ENGINE" \
+                    -H "$header_file" \
+                    -V geometry:landscape,margin=0.75in \
+                    -V fontsize=9pt \
+                    --standalone \
+                    -f markdown+raw_tex \
+                    2>&1)
+                if [ $? -eq 0 ] && [ -f "$final_report_pdf" ] && [ -s "$final_report_pdf" ]; then
                     PDF_SUCCESS=true
                 else
-                    echo "  ⚠ PDF generation failed (pandoc requires a LaTeX engine like pdflatex)"
-                    if [ -n "$PDF_ERROR" ]; then
-                        echo "     Error: $(echo "$PDF_ERROR" | head -1)"
+                    # Last resort: try without custom header, use basic markdown table
+                    echo "  ⚠ Advanced PDF formatting failed, trying basic format..."
+                    # Create simpler markdown without LaTeX tables
+                    {
+                        echo "# GitHub Pull Request Report - Merged PRs Evidence"
+                        echo ""
+                        echo "**Repository:** $repo  "
+                        echo "**Organization:** $ORG  "
+                        echo "**Report Generated:** $TIMESTAMP  "
+                        echo "**Date Range:** $START_DATE to $END_DATE  "
+                        echo "**Branch:** $BRANCH  "
+                        echo ""
+                        echo "## Command Executed"
+                        echo ""
+                        echo "\`\`\`"
+                        echo "$command_used" | fold -w 70 -s
+                        echo "\`\`\`"
+                        echo ""
+                        echo "## Execution Details"
+                        echo ""
+                        echo "- **Timestamp:** $TIMESTAMP"
+                        echo "- **Total PRs Merged:** $total_prs"
+                        echo "- **Pages Fetched:** $pages_fetched"
+                        echo ""
+                        echo "## Pull Request Summary"
+                        echo ""
+                        echo "| # | Title | Branch | Merged | Author | Rev | App | URL |"
+                        echo "|---|-------|--------|--------|--------|-----|-----|-----|"
+                        tail -n +2 "$report_file" | while IFS=$'\t' read -r num title branch merged author url reviewers approvals; do
+                            title_short=$(echo "$title" | cut -c1-40)
+                            if [ ${#title} -gt 40 ]; then
+                                title_short="${title_short}..."
+                            fi
+                            merged_date=$(echo "$merged" | cut -d'T' -f1)
+                            echo "| $num | $title_short | $branch | $merged_date | $author | $reviewers | $approvals | [Link]($url) |"
+                        done
+                    } > "$temp_md"
+
+                    PDF_ERROR=$(pandoc "$temp_md" -o "$final_report_pdf" --pdf-engine="$PDF_ENGINE" \
+                        -V geometry:landscape,margin=0.75in \
+                        -V fontsize=9pt \
+                        --standalone \
+                        2>&1)
+                    if [ $? -eq 0 ] && [ -f "$final_report_pdf" ] && [ -s "$final_report_pdf" ]; then
+                        PDF_SUCCESS=true
+                        echo "  ✓ Generated PDF with basic formatting"
+                    else
+                        echo "  ⚠ PDF generation failed"
+                        if [ -n "$PDF_ERROR" ]; then
+                            echo "     Error details:"
+                            echo "$PDF_ERROR" | grep -i "error\|fatal\|!" | head -5 | sed 's/^/       /'
+                        fi
+                        echo "     CSV report is available: $final_report_csv"
                     fi
-                    echo "     CSV report is available: $final_report_csv"
                 fi
             fi
+            rm -f "$header_file"
         elif [ "$PDF_TOOL" = "wkhtmltopdf" ]; then
             # Convert markdown to HTML first, then to PDF
             HTML_ERROR=$(pandoc "$temp_md" -o /tmp/temp.html 2>&1)
@@ -504,7 +612,7 @@ generate_report() {
             fi
         fi
 
-        rm -f "$temp_md" /tmp/temp.html
+        rm -f "$temp_md" /tmp/temp.html "$header_file"
 
         if [ "$PDF_SUCCESS" = true ] && [ -f "$final_report_pdf" ]; then
             echo "  ✓ Generated PDF: $final_report_pdf"
